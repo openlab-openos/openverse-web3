@@ -1,43 +1,18 @@
-[![npm][npm-image]][npm-url]
-[![npm-downloads][npm-downloads-image]][npm-url]
-[![semantic-release][semantic-release-image]][semantic-release-url]
-<br />
-[![code-style-prettier][code-style-prettier-image]][code-style-prettier-url]
+# Openverse JavaScript SDK
 
-[code-style-prettier-image]: https://img.shields.io/badge/code_style-prettier-ff69b4.svg?style=flat-square
-[code-style-prettier-url]: https://github.com/prettier/prettier
-[npm-downloads-image]: https://img.shields.io/npm/dm/@solana/web3.js.svg?style=flat
-[npm-image]: https://img.shields.io/npm/v/@solana/web3.js.svg?style=flat
-[npm-url]: https://www.npmjs.com/package/@solana/web3.js
-[semantic-release-image]: https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--release-e10079.svg
-[semantic-release-url]: https://github.com/semantic-release/semantic-release
-
-# Solana JavaScript SDK
-
-Use this to interact with accounts and programs on the Solana network through the Solana [JSON RPC API](https://docs.solana.com/apps/jsonrpc-api).
+Use this to interact with accounts and programs on the Solana network through the openverse [JSON RPC API]().
 
 ## Installation
 
 ### For use in Node.js or a web application
 
 ```
-$ npm install --save @solana/web3.js
+$ npm install --save openverse-web3
 ```
 
-### For use in a browser, without a build system
 
-```html
-<!-- Development (un-minified) -->
-<script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.js"></script>
 
-<!-- Production (minified) -->
-<script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
-```
 
-## Documentation and examples
-
-- [The Solana Cookbook](https://solanacookbook.com/) has extensive task-based documentation using this library.
-- For more detail on individual functions, see the [latest API Documentation](https://solana-labs.github.io/solana-web3.js)
 
 ## Getting help
 
