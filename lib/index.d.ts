@@ -1,5 +1,5 @@
 /// <reference types="node" />
-declare module "@solana/web3.js" {
+declare module "openverse-web3" {
 import { Buffer } from 'buffer';
 import { Agent } from 'http';
 import { Agent as Agent$1 } from 'https';

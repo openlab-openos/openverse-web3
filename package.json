@@ -1,6 +1,6 @@
 {
   "name": "openverse-web3",
-  "version": "1.89.1",
+  "version": "1.89.2",
   "description": "Openverse Javascript API",
   "keywords": [
     "api",
@@ -117,7 +117,7 @@
     "start-server-and-test": "^2.0.0",
     "ts-mocha": "^10.0.0",
     "ts-node": "^10.9.1",
-    "tsconfig": "workspace:*",
+    "tsconfig": "7.0.0",
     "tslib": "^2.6.2",
     "typedoc": "^0.25.4",
     "typescript": "^5.1.6"

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "display": "@solana/web3.js",
+  "display": "openverse-web3",
   "compilerOptions": {
     "allowJs": true,
     "allowSyntheticDefaultImports": true,
