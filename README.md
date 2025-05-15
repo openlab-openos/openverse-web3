@@ -1,18 +1,46 @@
-# Openverse JavaScript SDK
+[![npm][npm-image]][npm-url]
+[![npm-downloads][npm-downloads-image]][npm-url]
+[![semantic-release][semantic-release-image]][semantic-release-url]
+<br />
+[![code-style-prettier][code-style-prettier-image]][code-style-prettier-url]
 
-Use this to interact with accounts and programs on the Solana network through the openverse [JSON RPC API]().
+[code-style-prettier-image]: https://img.shields.io/badge/code_style-prettier-ff69b4.svg?style=flat-square
+[code-style-prettier-url]: https://github.com/prettier/prettier
+[npm-downloads-image]: https://img.shields.io/npm/dm/@solana/web3.js.svg?style=flat
+[npm-image]: https://img.shields.io/npm/v/@solana/web3.js.svg?style=flat
+[npm-url]: https://www.npmjs.com/package/@solana/web3.js
+[semantic-release-image]: https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--release-e10079.svg
+[semantic-release-url]: https://github.com/semantic-release/semantic-release
+
+> [!NOTE]
+> This is the maintenance branch for the 1.x line of `@solana/web3.js`. You can find the successor to this library here: [`@solana/kit`](https://l.anza.xyz/s/js-sdk-repo).
+
+# Solana JavaScript SDK (v1.x)
+
+Use this to interact with accounts and programs on the Solana network through the Solana [JSON RPC API](https://solana.com/docs/rpc).
 
 ## Installation
 
 ### For use in Node.js or a web application
 
 ```
-$ npm install --save openverse-web3
+$ npm install --save @solana/web3.js
 ```
 
+### For use in a browser, without a build system
 
+```html
+<!-- Development (un-minified) -->
+<script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.js"></script>
 
+<!-- Production (minified) -->
+<script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+```
 
+## Documentation and examples
+
+- [The Solana Cookbook](https://solanacookbook.com/) has extensive task-based documentation using this library.
+- For more detail on individual functions, see the [latest API Documentation](https://solana-foundation.github.io/solana-web3.js)
 
 ## Getting help
 
@@ -71,22 +99,9 @@ $ cd packages/library-legacy
 $ npm run test:live-with-test-validator
 ```
 
-### Speed up build times with remote caching
-
-Cache build artifacts remotely so that you, others, and the CI server can take advantage of each others' build efforts.
-
-1. Log the Turborepo CLI into the Solana Vercel account
-   ```shell
-   pnpm turbo login
-   ```
-2. Link the repository to the remote cache
-   ```shell
-   pnpm turbo link
-   ```
-
 ## Contributing
 
-If you found a bug or would like to request a feature, please [file an issue](https://github.com/solana-labs/solana-web3.js/issues/new). If, based on the discussion on an issue you would like to offer a code change, please make a [pull request](https://github.com/solana-labs/solana-web3.js/compare). If neither of these describes what you would like to contribute, read the [getting help](#getting-help) section above.
+If you found a bug or would like to request a feature, please [file an issue](https://github.com/solana-foundation/solana-web3.js/issues/new). If, based on the discussion on an issue you would like to offer a code change, please make a [pull request](https://github.com/solana-foundation/solana-web3.js/compare). If neither of these describes what you would like to contribute, read the [getting help](#getting-help) section above.
 
 ## Disclaimer
 

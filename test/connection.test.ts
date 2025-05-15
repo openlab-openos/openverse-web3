@@ -1,11 +1,10 @@
 import bs58 from 'bs58';
 import {Buffer} from 'buffer';
-import * as splToken from '@solana/spl-token';
 import {expect, use} from 'chai';
 import chaiAsPromised from 'chai-as-promised';
 import {Agent as HttpAgent} from 'http';
 import {Agent as HttpsAgent} from 'https';
-import {match, mock, spy, useFakeTimers, SinonFakeTimers} from 'sinon';
+import {match, mock, spy, stub, useFakeTimers, SinonFakeTimers} from 'sinon';
 import sinonChai from 'sinon-chai';
 import {fail} from 'assert';
 
@@ -26,6 +25,8 @@ import {
   SYSTEM_INSTRUCTION_LAYOUTS,
   NONCE_ACCOUNT_LENGTH,
   MessageAddressTableLookup,
+  sendAndConfirmRawTransaction,
+  SendTransactionError,
 } from '../src';
 import invariant from '../src/utils/assert';
 import {toBuffer} from '../src/utils/to-buffer';
@@ -80,6 +81,25 @@ import {encodeData} from '../src/instruction';
 use(chaiAsPromised);
 use(sinonChai);
 
+async function waitForSlot(
+  this: Mocha.Context,
+  connection: Connection,
+  minSlot: number = 0,
+): Promise<void> {
+  while ((await connection.getSlot()) <= minSlot) {
+    if (process.env.TEST_LIVE) {
+      // If the test validator is newly spawned, it may not have formed a root yet. Since we're
+      // going to have to wait up to 32 slots for a root, let's increase the timeout of this test.
+      this.timeout(
+        2000 +
+          400 * // ms per slot
+            (32 + minSlot) * // Max confirmations
+            1.25, // Fudge factor to leave time for rest of test
+      );
+    }
+    continue;
+  }
+}
 async function mockNonceAccountResponse(
   nonceAccountPubkey: string,
   nonceValue: string,
@@ -397,30 +417,38 @@ describe('Connection', function () {
       });
     }
 
-    {
-      await helpers.airdrop({
-        connection,
-        address: account1.publicKey,
-        amount: 0.5 * LAMPORTS_PER_SOL,
-      });
+    await helpers.airdrop({
+      connection,
+      address: account1.publicKey,
+      amount: 0.5 * LAMPORTS_PER_SOL,
+    });
 
-      const transaction = new Transaction().add(
-        SystemProgram.assign({
-          accountPubkey: account1.publicKey,
-          programId: programId.publicKey,
-        }),
-      );
+    const {blockhash, lastValidBlockHeight} = await helpers.latestBlockhash({
+      connection,
+    });
+    const feePayer = account1.publicKey;
 
-      await helpers.processTransaction({
-        connection,
-        transaction,
-        signers: [account1],
-        commitment: 'confirmed',
-      });
-    }
+    const transaction = new Transaction({
+      blockhash,
+      lastValidBlockHeight,
+      feePayer,
+    }).add(
+      SystemProgram.assign({
+        accountPubkey: account1.publicKey,
+        programId: programId.publicKey,
+      }),
+    );
 
-    const feeCalculator = (await helpers.recentBlockhash({connection}))
-      .feeCalculator;
+    const message = transaction._compile();
+    const fee =
+      (await helpers.getFeeForMessage({connection, message})).value ?? 0;
+
+    await helpers.processTransaction({
+      connection,
+      transaction,
+      signers: [account1],
+      commitment: 'confirmed',
+    });
 
     {
       await mockRpcResponse({
@@ -434,7 +462,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports: LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -445,8 +473,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports:
-                0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: 0.5 * LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -465,13 +492,11 @@ describe('Connection', function () {
       expect(programAccounts).to.have.length(2);
       programAccounts.forEach(function (keyedAccount) {
         if (keyedAccount.pubkey.equals(account0.publicKey)) {
-          expect(keyedAccount.account.lamports).to.eq(
-            LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
-          );
+          expect(keyedAccount.account.lamports).to.eq(LAMPORTS_PER_SOL - fee);
         } else {
           expect(keyedAccount.pubkey).to.eql(account1.publicKey);
           expect(keyedAccount.account.lamports).to.eq(
-            0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+            0.5 * LAMPORTS_PER_SOL - fee,
           );
         }
       });
@@ -489,7 +514,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports: LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -500,8 +525,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports:
-                0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: 0.5 * LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -518,13 +542,11 @@ describe('Connection', function () {
       expect(programAccounts).to.have.length(2);
       programAccounts.forEach(function (keyedAccount) {
         if (keyedAccount.pubkey.equals(account0.publicKey)) {
-          expect(keyedAccount.account.lamports).to.eq(
-            LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
-          );
+          expect(keyedAccount.account.lamports).to.eq(LAMPORTS_PER_SOL - fee);
         } else {
           expect(keyedAccount.pubkey).to.eql(account1.publicKey);
           expect(keyedAccount.account.lamports).to.eq(
-            0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+            0.5 * LAMPORTS_PER_SOL - fee,
           );
         }
       });
@@ -550,7 +572,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports: LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -561,8 +583,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports:
-                0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: 0.5 * LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -594,6 +615,7 @@ describe('Connection', function () {
             filters: [
               {
                 memcmp: {
+                  encoding: 'base58',
                   offset: 0,
                   bytes: 'XzdZ3w',
                 },
@@ -631,7 +653,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports: LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -642,8 +664,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports:
-                0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: 0.5 * LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -663,14 +684,10 @@ describe('Connection', function () {
 
       programAccounts.forEach(function (element) {
         if (element.pubkey.equals(account0.publicKey)) {
-          expect(element.account.lamports).to.eq(
-            LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
-          );
+          expect(element.account.lamports).to.eq(LAMPORTS_PER_SOL - fee);
         } else {
           expect(element.pubkey).to.eql(account1.publicKey);
-          expect(element.account.lamports).to.eq(
-            0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
-          );
+          expect(element.account.lamports).to.eq(0.5 * LAMPORTS_PER_SOL - fee);
         }
       });
     }
@@ -712,6 +729,7 @@ describe('Connection', function () {
             filters: [
               {
                 memcmp: {
+                  encoding: 'base58',
                   offset: 0,
                   bytes: '',
                 },
@@ -724,7 +742,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports: LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -735,8 +753,7 @@ describe('Connection', function () {
             account: {
               data: ['', 'base64'],
               executable: false,
-              lamports:
-                0.5 * LAMPORTS_PER_SOL - feeCalculator.lamportsPerSignature,
+              lamports: 0.5 * LAMPORTS_PER_SOL - fee,
               owner: programId.publicKey.toBase58(),
               rentEpoch: 20,
               space: 0,
@@ -1066,6 +1083,261 @@ describe('Connection', function () {
   }
 
   if (process.env.TEST_LIVE) {
+    describe('transaction sending error logs', () => {
+      it('sendAndConfirmTransaction skipPreflight: false', async () => {
+        const keypair = Keypair.generate();
+        const destinationKeypair = Keypair.generate();
+
+        connection = new Connection(url, 'confirmed');
+        let confirmOptions = {
+          skipPreflight: false,
+          commitment: connection.commitment,
+          preflightCommitment: connection.commitment,
+          maxRetries: 5,
+          minContextSlot: 0,
+        };
+
+        await connection.confirmTransaction(
+          await connection.requestAirdrop(keypair.publicKey, LAMPORTS_PER_SOL),
+        );
+
+        const transferSolTransaction = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: keypair.publicKey,
+            toPubkey: destinationKeypair.publicKey,
+            lamports: 2 * LAMPORTS_PER_SOL,
+          }),
+        );
+
+        const sendPromise = sendAndConfirmTransaction(
+          connection,
+          transferSolTransaction,
+          [keypair],
+          confirmOptions,
+        );
+
+        await Promise.all([
+          await expect(sendPromise).to.eventually.be.rejectedWith(
+            SendTransactionError,
+            /Transfer: insufficient lamports/,
+          ),
+          await expect(sendPromise).to.eventually.be.rejectedWith(
+            SendTransactionError,
+            /Program 11111111111111111111111111111111 failed: custom program error: 0x1/,
+          ),
+        ]);
+      });
+
+      it('sendAndConfirmTransaction skipPreflight: true', async () => {
+        const keypair = Keypair.generate();
+        const destinationKeypair = Keypair.generate();
+
+        connection = new Connection(url, 'confirmed');
+        let confirmOptions = {
+          skipPreflight: true,
+          commitment: connection.commitment,
+          preflightCommitment: connection.commitment,
+          maxRetries: 5,
+          minContextSlot: 0,
+        };
+
+        await connection.confirmTransaction(
+          await connection.requestAirdrop(keypair.publicKey, LAMPORTS_PER_SOL),
+        );
+
+        const transferSolTransaction = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: keypair.publicKey,
+            toPubkey: destinationKeypair.publicKey,
+            lamports: 2 * LAMPORTS_PER_SOL,
+          }),
+        );
+
+        try {
+          await sendAndConfirmTransaction(
+            connection,
+            transferSolTransaction,
+            [keypair],
+            confirmOptions,
+          );
+          throw new Error('Expected an error but did not get one');
+        } catch (error) {
+          if (error instanceof SendTransactionError) {
+            const logsPromise: Promise<string[]> = error.getLogs(connection);
+
+            await Promise.all([
+              expect(logsPromise).to.eventually.satisfy((logs: string[]) =>
+                logs.some(log =>
+                  log.includes('Transfer: insufficient lamports'),
+                ),
+              ),
+              expect(logsPromise).to.eventually.satisfy((logs: string[]) =>
+                logs.some(log =>
+                  log.includes(
+                    'Program 11111111111111111111111111111111 failed: custom program error: 0x1',
+                  ),
+                ),
+              ),
+            ]);
+          }
+        }
+      });
+
+      it('sendAndConfirmRawTransaction skipPreflight: true', async () => {
+        const keypair = Keypair.generate();
+        const destinationKeypair = Keypair.generate();
+
+        connection = new Connection(url, 'confirmed');
+        let confirmOptions = {
+          skipPreflight: true,
+          commitment: connection.commitment,
+          preflightCommitment: connection.commitment,
+          maxRetries: 5,
+          minContextSlot: 0,
+        };
+
+        await connection.confirmTransaction(
+          await connection.requestAirdrop(keypair.publicKey, LAMPORTS_PER_SOL),
+        );
+
+        const transferSolTransaction = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: keypair.publicKey,
+            toPubkey: destinationKeypair.publicKey,
+            lamports: 2 * LAMPORTS_PER_SOL,
+          }),
+        );
+
+        transferSolTransaction.recentBlockhash = (
+          await connection.getRecentBlockhash('confirmed')
+        ).blockhash;
+        transferSolTransaction.sign(keypair);
+
+        try {
+          await sendAndConfirmRawTransaction(
+            connection,
+            transferSolTransaction.serialize(),
+            confirmOptions,
+          );
+        } catch (error) {
+          if (error instanceof SendTransactionError) {
+            const logsPromise: Promise<string[]> = error.getLogs(connection);
+
+            await Promise.all([
+              expect(logsPromise).to.eventually.satisfy((logs: string[]) =>
+                logs.some(log =>
+                  log.includes('Transfer: insufficient lamports'),
+                ),
+              ),
+              expect(logsPromise).to.eventually.satisfy((logs: string[]) =>
+                logs.some(log =>
+                  log.includes(
+                    'Program 11111111111111111111111111111111 failed: custom program error: 0x1',
+                  ),
+                ),
+              ),
+            ]);
+          }
+        }
+      });
+
+      it('sendAndConfirmRawTransaction skipPreflight: false', async () => {
+        const keypair = Keypair.generate();
+        const destinationKeypair = Keypair.generate();
+
+        connection = new Connection(url, 'confirmed');
+        let confirmOptions = {
+          skipPreflight: false,
+          commitment: connection.commitment,
+          preflightCommitment: connection.commitment,
+          maxRetries: 5,
+          minContextSlot: 0,
+        };
+
+        await connection.confirmTransaction(
+          await connection.requestAirdrop(keypair.publicKey, LAMPORTS_PER_SOL),
+        );
+
+        const transferSolTransaction = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: keypair.publicKey,
+            toPubkey: destinationKeypair.publicKey,
+            lamports: 2 * LAMPORTS_PER_SOL,
+          }),
+        );
+
+        transferSolTransaction.recentBlockhash = (
+          await connection.getRecentBlockhash('confirmed')
+        ).blockhash;
+        transferSolTransaction.sign(keypair);
+
+        const sendPromise = sendAndConfirmRawTransaction(
+          connection,
+          transferSolTransaction.serialize(),
+          confirmOptions,
+        );
+
+        await Promise.all([
+          await expect(sendPromise).to.eventually.be.rejectedWith(
+            SendTransactionError,
+            /Transfer: insufficient lamports/,
+          ),
+          await expect(sendPromise).to.eventually.be.rejectedWith(
+            SendTransactionError,
+            /Program 11111111111111111111111111111111 failed: custom program error: 0x1/,
+          ),
+        ]);
+      });
+
+      it('Simulate transaction contains logs', async () => {
+        const keypair = Keypair.generate();
+        const destinationKeypair = Keypair.generate();
+
+        connection = new Connection(url, 'confirmed');
+
+        await connection.confirmTransaction(
+          await connection.requestAirdrop(keypair.publicKey, LAMPORTS_PER_SOL),
+        );
+
+        const transferSolTransaction = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: keypair.publicKey,
+            toPubkey: destinationKeypair.publicKey,
+            lamports: 2 * LAMPORTS_PER_SOL,
+          }),
+        );
+
+        transferSolTransaction.recentBlockhash = (
+          await connection.getRecentBlockhash('confirmed')
+        ).blockhash;
+        transferSolTransaction.sign(keypair);
+
+        const simulationResultPromise = connection.simulateTransaction(
+          transferSolTransaction,
+          [keypair],
+        );
+
+        await Promise.all([
+          expect(simulationResultPromise)
+            .to.eventually.have.nested.property('value.logs')
+            .that.satisfies((logs: string[]) =>
+              logs.some(log => log.includes('Transfer: insufficient lamports')),
+            ),
+          expect(simulationResultPromise)
+            .to.eventually.have.nested.property('value.logs')
+            .that.satisfies((logs: string[]) =>
+              logs.some(log =>
+                log.includes(
+                  'Program 11111111111111111111111111111111 failed: custom program error: 0x1',
+                ),
+              ),
+            ),
+        ]);
+      });
+    });
+  }
+
+  if (process.env.TEST_LIVE) {
     describe('transaction confirmation (live)', () => {
       let connection: Connection;
       beforeEach(() => {
@@ -1269,7 +1541,14 @@ describe('Connection', function () {
     describe('transaction confirmation (mock)', () => {
       let clock: SinonFakeTimers;
       beforeEach(() => {
-        clock = useFakeTimers();
+        clock = useFakeTimers({
+          toFake: [
+            'clearInterval',
+            'clearTimeout',
+            'setInterval',
+            'setTimeout',
+          ],
+        });
       });
 
       afterEach(() => {
@@ -1422,9 +1701,9 @@ describe('Connection', function () {
           });
 
           rejectBlockheightPromise();
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
           resolveResultPromise({err: null});
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
 
           expect(confirmationPromise).not.to.eventually.be.rejected;
         });
@@ -1604,7 +1883,7 @@ describe('Connection', function () {
             ],
             withContext: true,
           });
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
 
           await expect(confirmationPromise).to.eventually.deep.equal({
             context: {slot: 11},
@@ -1719,7 +1998,7 @@ describe('Connection', function () {
             ],
             withContext: true,
           });
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
 
           await expect(confirmationPromise).to.eventually.be.rejectedWith(
             TransactionExpiredNonceInvalidError,
@@ -1766,9 +2045,9 @@ describe('Connection', function () {
           });
 
           rejectNonceAccountFetchPromise();
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
           resolveResultPromise({err: null});
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
 
           await expect(confirmationPromise).to.eventually.deep.equal({
             context: {slot: 11},
@@ -1803,7 +2082,7 @@ describe('Connection', function () {
             value: null,
             withContext: true,
           });
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
           await mockRpcResponse({
             method: 'getSignatureStatuses',
             params: [[mockSignature]],
@@ -1817,7 +2096,7 @@ describe('Connection', function () {
             ],
             withContext: true,
           });
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
 
           await expect(confirmationPromise).to.eventually.be.rejectedWith(
             TransactionExpiredNonceInvalidError,
@@ -1863,10 +2142,10 @@ describe('Connection', function () {
             nonceValue,
             signature: mockSignature,
           });
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
 
           resolveResultPromise({err: null});
-          clock.runToLastAsync();
+          await clock.runToLastAsync();
 
           await expect(confirmationPromise).to.eventually.deep.equal({
             context: {slot: 11},
@@ -2055,21 +2334,19 @@ describe('Connection', function () {
     expect(count).to.be.at.least(0);
   });
 
-  it('get confirmed signatures for address', async () => {
+  it('get confirmed signatures for address', async function () {
     const connection = new Connection(url);
 
     await mockRpcResponse({
       method: 'getSlot',
       params: [],
-      value: 1,
+      value: 2,
     });
 
-    while ((await connection.getSlot()) <= 0) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     await mockRpcResponse({
-      method: 'getConfirmedBlock',
+      method: 'getBlock',
       params: [1],
       value: {
         blockTime: 1614281964,
@@ -2151,7 +2428,7 @@ describe('Connection', function () {
     const mockSignature =
       '5SHZ9NwpnS9zYnauN7pnuborKf39zGMr11XpMC59VvRSeDJNcnYLecmdxXCVuBFPNQLdCBBjyZiNCL4KoHKr3tvz';
     await mockRpcResponse({
-      method: 'getConfirmedBlock',
+      method: 'getBlock',
       params: [slot, {transactionDetails: 'signatures', rewards: false}],
       value: {
         blockTime: 1614281964,
@@ -2167,7 +2444,7 @@ describe('Connection', function () {
       value: 123,
     });
     await mockRpcResponse({
-      method: 'getConfirmedBlock',
+      method: 'getBlock',
       params: [slot + 2, {transactionDetails: 'signatures', rewards: false}],
       value: {
         blockTime: 1614281964,
@@ -2200,7 +2477,7 @@ describe('Connection', function () {
 
     const badSlot = Number.MAX_SAFE_INTEGER - 1;
     await mockRpcResponse({
-      method: 'getConfirmedBlock',
+      method: 'getBlock',
       params: [badSlot - 1, {transactionDetails: 'signatures', rewards: false}],
       error: {message: 'Block not available for slot ' + badSlot},
     });
@@ -2237,21 +2514,19 @@ describe('Connection', function () {
     }
   });
 
-  it('get signatures for address', async () => {
+  it('get signatures for address', async function () {
     const connection = new Connection(url);
 
     await mockRpcResponse({
       method: 'getSlot',
       params: [],
-      value: 1,
+      value: 2,
     });
 
-    while ((await connection.getSlot()) <= 0) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     await mockRpcResponse({
-      method: 'getConfirmedBlock',
+      method: 'getBlock',
       params: [1],
       value: {
         blockTime: 1614281964,
@@ -2350,19 +2625,17 @@ describe('Connection', function () {
     }
   });
 
-  it('get parsed confirmed transactions', async () => {
+  it('get parsed confirmed transactions', async function () {
     await mockRpcResponse({
       method: 'getSlot',
       params: [],
-      value: 1,
+      value: 2,
     });
 
-    while ((await connection.getSlot()) <= 0) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     await mockRpcResponse({
-      method: 'getConfirmedBlock',
+      method: 'getBlock',
       params: [1],
       value: {
         blockTime: 1614281964,
@@ -2434,7 +2707,7 @@ describe('Connection', function () {
     await mockRpcBatchResponse({
       batch: [
         {
-          methodName: 'getConfirmedTransaction',
+          methodName: 'getTransaction',
           args: [],
         },
       ],
@@ -2857,16 +3130,14 @@ describe('Connection', function () {
     expect(resultCOSlotRange.lastSlot).to.equal(lastSlot);
   });
 
-  it('get transaction', async () => {
+  it('get transaction', async function () {
     await mockRpcResponse({
       method: 'getSlot',
       params: [],
-      value: 1,
+      value: 2,
     });
 
-    while ((await connection.getSlot()) <= 0) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     await mockRpcResponse({
       method: 'getBlock',
@@ -3008,19 +3279,17 @@ describe('Connection', function () {
     expect(nullResponse).to.be.null;
   });
 
-  it('get confirmed transaction', async () => {
+  it('get confirmed transaction', async function () {
     await mockRpcResponse({
       method: 'getSlot',
       params: [],
-      value: 1,
+      value: 2,
     });
 
-    while ((await connection.getSlot()) <= 0) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     await mockRpcResponse({
-      method: 'getConfirmedBlock',
+      method: 'getBlock',
       params: [1],
       value: {
         blockTime: 1614281964,
@@ -3090,7 +3359,7 @@ describe('Connection', function () {
     }
 
     await mockRpcResponse({
-      method: 'getConfirmedTransaction',
+      method: 'getTransaction',
       params: [confirmedTransaction],
       value: {
         slot,
@@ -3156,7 +3425,7 @@ describe('Connection', function () {
     });
 
     await mockRpcResponse({
-      method: 'getConfirmedTransaction',
+      method: 'getTransaction',
       params: [recentSignature],
       value: null,
     });
@@ -3171,12 +3440,10 @@ describe('Connection', function () {
     await mockRpcResponse({
       method: 'getSlot',
       params: [],
-      value: 1,
+      value: 2,
     });
 
-    while ((await connection.getSlot()) <= 0) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     await mockRpcResponse({
       method: 'getBlock',
@@ -3350,7 +3617,7 @@ describe('Connection', function () {
       }
 
       await mockRpcResponse({
-        method: 'getConfirmedTransaction',
+        method: 'getTransaction',
         params: [confirmedTransaction, {encoding: 'jsonParsed'}],
         value: getMockData({
           parsed: {},
@@ -3369,7 +3636,7 @@ describe('Connection', function () {
       }
 
       await mockRpcResponse({
-        method: 'getConfirmedTransaction',
+        method: 'getTransaction',
         params: [confirmedTransaction, {encoding: 'jsonParsed'}],
         value: getMockData({
           accounts: [
@@ -3629,9 +3896,7 @@ describe('Connection', function () {
         value: 1,
       });
 
-      while ((await connection.getSlot()) <= 0) {
-        continue;
-      }
+      await waitForSlot.call(this, connection);
     });
 
     it('gets the genesis block', async function () {
@@ -3977,14 +4242,12 @@ describe('Connection', function () {
         value: 1,
       });
 
-      while ((await connection.getSlot()) <= 0) {
-        continue;
-      }
+      await waitForSlot.call(this, connection);
     });
 
     it('gets the genesis block', async function () {
       await mockRpcResponse({
-        method: 'getConfirmedBlock',
+        method: 'getBlock',
         params: [0],
         value: {
           blockHeight: 0,
@@ -4022,7 +4285,7 @@ describe('Connection', function () {
     it('gets a block having a parent', async function () {
       // Mock parent of block with transaction.
       await mockRpcResponse({
-        method: 'getConfirmedBlock',
+        method: 'getBlock',
         params: [0],
         value: {
           blockHeight: 0,
@@ -4035,7 +4298,7 @@ describe('Connection', function () {
       });
       // Mock block with transaction.
       await mockRpcResponse({
-        method: 'getConfirmedBlock',
+        method: 'getBlock',
         params: [1],
         value: {
           blockTime: 1614281964,
@@ -4122,7 +4385,7 @@ describe('Connection', function () {
         .null;
 
       await mockRpcResponse({
-        method: 'getConfirmedBlock',
+        method: 'getBlock',
         params: [Number.MAX_SAFE_INTEGER],
         error: {
           message: `Block not available for slot ${Number.MAX_SAFE_INTEGER}`,
@@ -4136,7 +4399,7 @@ describe('Connection', function () {
     });
   });
 
-  it('get blocks between two slots', async () => {
+  it('get blocks between two slots', async function () {
     await mockRpcResponse({
       method: 'getBlocks',
       params: [0, 9],
@@ -4153,9 +4416,7 @@ describe('Connection', function () {
       value: 9,
     });
 
-    while ((await connection.getSlot()) <= 1) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     const [startSlot, latestSlot] = await Promise.all([
       connection.getFirstAvailableBlock(),
@@ -4165,9 +4426,9 @@ describe('Connection', function () {
     expect(blocks).to.have.length(latestSlot - startSlot + 1);
     expect(blocks[0]).to.eq(startSlot);
     expect(blocks).to.contain(latestSlot);
-  }).timeout(20 * 1000);
+  });
 
-  it('get blocks from starting slot', async () => {
+  it('get blocks from starting slot', async function () {
     await mockRpcResponse({
       method: 'getBlocks',
       params: [0],
@@ -4188,9 +4449,7 @@ describe('Connection', function () {
       value: 20,
     });
 
-    while ((await connection.getSlot()) <= 1) {
-      continue;
-    }
+    await waitForSlot.call(this, connection, 1);
 
     const startSlot = await connection.getFirstAvailableBlock();
     const [blocks, latestSlot] = await Promise.all([
@@ -4204,7 +4463,7 @@ describe('Connection', function () {
     }
     expect(blocks[0]).to.eq(startSlot);
     expect(blocks).to.contain(latestSlot);
-  }).timeout(20 * 1000);
+  });
 
   describe('get block signatures', function () {
     beforeEach(async function () {
@@ -4214,9 +4473,7 @@ describe('Connection', function () {
         value: 1,
       });
 
-      while ((await connection.getSlot()) <= 0) {
-        continue;
-      }
+      await waitForSlot.call(this, connection);
     });
 
     it('gets the genesis block', async function () {
@@ -4360,12 +4617,40 @@ describe('Connection', function () {
   it('get recent blockhash', async () => {
     const commitments: Commitment[] = ['processed', 'confirmed', 'finalized'];
     for (const commitment of commitments) {
+      const {blockhash} = await helpers.recentBlockhash({
+        connection,
+        commitment,
+      });
+      expect(bs58.decode(blockhash)).to.have.length(32);
+    }
+  });
+
+  it('get recent blockhash can stringify', async () => {
+    const commitments: Commitment[] = ['processed', 'confirmed', 'finalized'];
+    for (const commitment of commitments) {
+      const response = await helpers.recentBlockhash({
+        connection,
+        commitment,
+      });
+      expect(JSON.stringify(response)).to.match(
+        /{"blockhash":"\w+","feeCalculator":{}}/,
+      );
+    }
+  });
+
+  it('get recent blockhash LPS field throws', async () => {
+    const commitments: Commitment[] = ['processed', 'confirmed', 'finalized'];
+    for (const commitment of commitments) {
       const {blockhash, feeCalculator} = await helpers.recentBlockhash({
         connection,
         commitment,
       });
       expect(bs58.decode(blockhash)).to.have.length(32);
-      expect(feeCalculator.lamportsPerSignature).to.be.at.least(0);
+      // Accessing the blockhash field works fine.
+      // When attempting to access `lamportsPerSignature`, throws.
+      expect(() => feeCalculator.lamportsPerSignature).to.throw(
+        'The capability to fetch `lamportsPerSignature` using the `getRecentBlockhash` API is no longer offered by the network. Use the `getFeeForMessage` API to obtain the fee for a given message.',
+      );
     }
   });
 
@@ -4662,90 +4947,68 @@ describe('Connection', function () {
       const connection = new Connection(url, 'confirmed');
       const newAccount = PublicKey.unique();
 
-      let payerKeypair = new Keypair();
-      let testTokenMintPubkey: PublicKey;
-      let testOwnerKeypair: Keypair;
-      let testTokenAccountPubkey: PublicKey;
-      let testSignature: TransactionSignature;
+      // See scripts/fixtures/legacy-token-test-mint-account.json
+      const testTokenMintPubkey = new PublicKey(
+        '7MbpdfJa5xqwexkp6WUvkYHTPo4VgxYACDBNFWYLwCdo',
+      );
+      // See scripts/fixtures/legacy-token-test-token-owner.json
+      const testOwnerKeypair = Keypair.fromSecretKey(
+        // Public key: `AVGuygVeBmbYiJ47V7tgBNLSukNqW7pWZYJsKUNWhHpc`
+        new Uint8Array([
+          153, 120, 247, 45, 160, 119, 144, 219, 220, 209, 73, 91, 210, 102, 31,
+          136, 155, 12, 68, 27, 226, 215, 61, 214, 10, 245, 247, 180, 236, 63,
+          100, 202, 140, 247, 112, 54, 120, 32, 168, 118, 72, 115, 190, 34, 171,
+          126, 15, 119, 252, 173, 50, 173, 8, 10, 96, 239, 21, 32, 94, 67, 37,
+          43, 145, 249,
+        ]),
+      );
+      // See scripts/fixtures/legacy-token-test-token-account.json
+      const testTokenAccountPubkey = new PublicKey(
+        'EryTMgfSEabo5Fc7dN5z3nBQKzfHUJRpHAMnXdCrTq4S',
+      );
+      let selfTransferSignature: TransactionSignature;
 
       // Setup token mints and accounts for token tests
       before(async function () {
         this.timeout(30 * 1000);
 
-        await connection.confirmTransaction(
-          await connection.requestAirdrop(payerKeypair.publicKey, 100000000000),
+        const selfTransferTransaction = new Transaction().add(
+          new TransactionInstruction({
+            keys: [
+              {
+                pubkey: testTokenAccountPubkey,
+                isSigner: false,
+                isWritable: true,
+              },
+              {
+                pubkey: testTokenAccountPubkey,
+                isSigner: false,
+                isWritable: true,
+              },
+              {
+                pubkey: testOwnerKeypair.publicKey,
+                isSigner: true,
+                isWritable: false,
+              },
+            ],
+            programId: new PublicKey(
+              'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+            ),
+            data: Buffer.from(
+              // prettier-ignore
+              [
+                3, // TRANSFER instruction
+                1, 0, 0, 0, 0, 0, 0, 0, // 1 Lamport
+            ],
+            ),
+          }),
         );
 
-        const mintOwnerKeypair = new Keypair();
-        const accountOwnerKeypair = new Keypair();
-        const mintPubkey = await splToken.createMint(
-          connection as any,
-          payerKeypair,
-          mintOwnerKeypair.publicKey,
-          null, // freeze authority
-          2, // decimals
+        selfTransferSignature = await sendAndConfirmTransaction(
+          connection,
+          selfTransferTransaction,
+          [testOwnerKeypair],
         );
-
-        const tokenAccountPubkey = await splToken.createAccount(
-          connection as any,
-          payerKeypair,
-          mintPubkey,
-          accountOwnerKeypair.publicKey,
-        );
-
-        await splToken.mintTo(
-          connection as any,
-          payerKeypair,
-          mintPubkey,
-          tokenAccountPubkey,
-          mintOwnerKeypair,
-          11111,
-        );
-
-        const mintPubkey2 = await splToken.createMint(
-          connection as any,
-          payerKeypair,
-          mintOwnerKeypair.publicKey,
-          null, // freeze authority
-          2, // decimals
-        );
-
-        const tokenAccountPubkey2 = await splToken.createAccount(
-          connection as any,
-          payerKeypair,
-          mintPubkey2,
-          accountOwnerKeypair.publicKey,
-        );
-
-        await splToken.mintTo(
-          connection as any,
-          payerKeypair,
-          mintPubkey2,
-          tokenAccountPubkey2,
-          mintOwnerKeypair,
-          100,
-        );
-
-        const tokenAccountDestPubkey = await splToken.createAccount(
-          connection as any,
-          payerKeypair,
-          mintPubkey,
-          accountOwnerKeypair.publicKey,
-          new Keypair() as any,
-        );
-
-        testSignature = await splToken.transfer(
-          connection as any,
-          payerKeypair,
-          tokenAccountPubkey,
-          tokenAccountDestPubkey,
-          accountOwnerKeypair,
-          1,
-        );
-
-        testTokenMintPubkey = mintPubkey as PublicKey;
-        testOwnerKeypair = accountOwnerKeypair;
-        testTokenAccountPubkey = tokenAccountPubkey as PublicKey;
       });
 
       it('get token supply', async () => {
@@ -4763,7 +5026,7 @@ describe('Connection', function () {
           await connection.getTokenLargestAccounts(testTokenMintPubkey)
         ).value;
 
-        expect(largestAccounts).to.have.length(2);
+        expect(largestAccounts).to.have.length(1);
         const largestAccount = largestAccounts[0];
         expect(largestAccount.address.equals(testTokenAccountPubkey)).to.be
           .true;
@@ -4776,14 +5039,15 @@ describe('Connection', function () {
       });
 
       it('get confirmed token transaction', async () => {
-        const parsedTx =
-          await connection.getParsedConfirmedTransaction(testSignature);
+        const parsedTx = await connection.getParsedConfirmedTransaction(
+          selfTransferSignature,
+        );
         if (parsedTx === null) {
           expect(parsedTx).not.to.be.null;
           return;
         }
         const {signatures, message} = parsedTx.transaction;
-        expect(signatures[0]).to.eq(testSignature);
+        expect(signatures[0]).to.eq(selfTransferSignature);
         const ix = message.instructions[0];
         if ('parsed' in ix) {
           expect(ix.program).to.eq('spl-token');
@@ -4832,7 +5096,7 @@ describe('Connection', function () {
           await connection.getMultipleParsedAccounts([
             testTokenAccountPubkey,
             testTokenMintPubkey,
-            payerKeypair.publicKey,
+            testOwnerKeypair.publicKey,
             newAccount,
           ])
         ).value;
@@ -4864,12 +5128,12 @@ describe('Connection', function () {
           expect(parsedTokenMint).to.be.ok;
         }
 
-        const unparsedPayerAccount = accounts[2];
-        if (unparsedPayerAccount) {
-          const data = unparsedPayerAccount.data;
+        const unparsedOwnerAccount = accounts[2];
+        if (unparsedOwnerAccount) {
+          const data = unparsedOwnerAccount.data;
           expect(Buffer.isBuffer(data)).to.be.true;
         } else {
-          expect(unparsedPayerAccount).to.be.ok;
+          expect(unparsedOwnerAccount).to.be.ok;
         }
 
         const unknownAccount = accounts[3];
@@ -4918,14 +5182,14 @@ describe('Connection', function () {
             mint: testTokenMintPubkey,
           })
         ).value;
-        expect(accountsWithMintFilter).to.have.length(2);
+        expect(accountsWithMintFilter).to.have.length(1);
 
         const accountsWithProgramFilter = (
           await connection.getTokenAccountsByOwner(testOwnerKeypair.publicKey, {
             programId: TOKEN_PROGRAM_ID,
           })
         ).value;
-        expect(accountsWithProgramFilter).to.have.length(3);
+        expect(accountsWithProgramFilter).to.have.length(1);
 
         const noAccounts = (
           await connection.getTokenAccountsByOwner(newAccount, {
@@ -4967,6 +5231,29 @@ describe('Connection', function () {
       await sendAndConfirmTransaction(connection, transaction, [sender]);
     });
   }
+
+  // FIXME Remove when https://github.com/anza-xyz/agave/pull/483 is deployed.
+  (
+    [undefined, 'processed', 'confirmed', 'finalized'] as (
+      | Commitment
+      | undefined
+    )[]
+  ).forEach(explicitPreflightCommitment => {
+    it(`sets \`preflightCommitment\` to \`processed\` when \`skipPreflight\` is \`true\`, no matter that \`preflightCommitment\` was set to \`${explicitPreflightCommitment}\``, () => {
+      const connection = new Connection(url);
+      const rpcRequestMethod = spy(connection, '_rpcRequest');
+      connection.sendEncodedTransaction('ENCODEDTRANSACTION', {
+        ...(explicitPreflightCommitment
+          ? {preflightCommitment: explicitPreflightCommitment}
+          : null),
+        skipPreflight: true,
+      });
+      expect(rpcRequestMethod).to.have.been.calledWithExactly(
+        'sendTransaction',
+        [match.any, match.has('preflightCommitment', 'processed')],
+      );
+    });
+  });
 
   it('get largest accounts', async () => {
     await mockRpcResponse({
@@ -5656,7 +5943,7 @@ describe('Connection', function () {
               subscriptionId = connection.onAccountChange(
                 owner.publicKey,
                 resolve,
-                'confirmed',
+                {commitment: 'confirmed'},
               );
             },
           );
@@ -6136,4 +6423,131 @@ describe('Connection', function () {
       });
     }).timeout(5 * 1000);
   }
+
+  it('passes the commitment/encoding to the RPC when calling `onAccountChange`', () => {
+    const connection = new Connection(url);
+    const rpcRequestMethod = stub(
+      connection,
+      // @ts-expect-error This method is private, but none the less this spy will work.
+      '_makeSubscription',
+    );
+    const mockCallback = () => {};
+    connection.onAccountChange(PublicKey.default, mockCallback, {
+      commitment: 'processed',
+      encoding: 'base64+zstd',
+    });
+    expect(rpcRequestMethod).to.have.been.calledWithExactly(
+      {
+        callback: mockCallback,
+        method: 'accountSubscribe',
+        unsubscribeMethod: 'accountUnsubscribe',
+      },
+      [
+        match.any,
+        match
+          .has('commitment', 'processed')
+          .and(match.has('encoding', 'base64+zstd')),
+      ],
+    );
+  });
+  it('passes the commitment to the RPC when the deprecated signature of `onAccountChange` is used', () => {
+    const connection = new Connection(url);
+    const rpcRequestMethod = stub(
+      connection,
+      // @ts-expect-error This method is private, but none the less this spy will work.
+      '_makeSubscription',
+    );
+    const mockCallback = () => {};
+    connection.onAccountChange(PublicKey.default, mockCallback, 'processed');
+    expect(rpcRequestMethod).to.have.been.calledWithExactly(
+      {
+        callback: mockCallback,
+        method: 'accountSubscribe',
+        unsubscribeMethod: 'accountUnsubscribe',
+      },
+      [match.any, match.has('commitment', 'processed')],
+    );
+  });
+  it('passes the commitment to the RPC when the deprecated signature of `onProgramAccountChange` is used', () => {
+    const connection = new Connection(url);
+    const rpcRequestMethod = stub(
+      connection,
+      // @ts-expect-error This method is private, but none the less this spy will work.
+      '_makeSubscription',
+    );
+    const mockCallback = () => {};
+    connection.onProgramAccountChange(
+      PublicKey.default,
+      mockCallback,
+      'processed' /* commitment */,
+    );
+    expect(rpcRequestMethod).to.have.been.calledWithExactly(
+      {
+        callback: mockCallback,
+        method: 'programSubscribe',
+        unsubscribeMethod: 'programUnsubscribe',
+      },
+      [match.any, match.has('commitment', 'processed')],
+    );
+  });
+  it('passes the filters to the RPC when the deprecated signature of `onProgramAccountChange` is used', () => {
+    const connection = new Connection(url);
+    const rpcRequestMethod = stub(
+      connection,
+      // @ts-expect-error This method is private, but none the less this spy will work.
+      '_makeSubscription',
+    );
+    const mockCallback = () => {};
+    connection.onProgramAccountChange(
+      PublicKey.default,
+      mockCallback,
+      /* commitment */ undefined,
+      /* filters */ [{dataSize: 123}, {memcmp: {bytes: 'AAA', offset: 1}}],
+    );
+    expect(rpcRequestMethod).to.have.been.calledWithExactly(
+      {
+        callback: mockCallback,
+        method: 'programSubscribe',
+        unsubscribeMethod: 'programUnsubscribe',
+      },
+      [
+        match.any,
+        match.has('filters', [
+          {dataSize: 123},
+          {memcmp: {encoding: 'base58', bytes: 'AAA', offset: 1}},
+        ]),
+      ],
+    );
+  });
+  it('passes the commitment/encoding/filters to the RPC when calling `onProgramAccountChange`', () => {
+    const connection = new Connection(url);
+    const rpcRequestMethod = stub(
+      connection,
+      // @ts-expect-error This method is private, but none the less this spy will work.
+      '_makeSubscription',
+    );
+    const mockCallback = () => {};
+    connection.onProgramAccountChange(PublicKey.default, mockCallback, {
+      commitment: 'processed',
+      encoding: 'base64+zstd',
+      filters: [{dataSize: 123}],
+    });
+    expect(rpcRequestMethod).to.have.been.calledWithExactly(
+      {
+        callback: mockCallback,
+        method: 'programSubscribe',
+        unsubscribeMethod: 'programUnsubscribe',
+      },
+      [
+        match.any,
+        match
+          .has('commitment', 'processed')
+          .and(
+            match
+              .has('encoding', 'base64+zstd')
+              .and(match.has('filters', [{dataSize: 123}])),
+          ),
+      ],
+    );
+  });
 });

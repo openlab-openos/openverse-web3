@@ -1,17 +1,24 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "display": "openverse-web3",
+  "display": "@solana/web3.js",
   "compilerOptions": {
     "allowJs": true,
     "allowSyntheticDefaultImports": true,
+    "declaration": true,
     "declarationDir": "declarations",
-    "module": "esnext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "noImplicitReturns": true,
     "outDir": "lib",
-    "resolveJsonModule": true,
-    "strict": true
+    "strict": true,
+    "target": "ESNext"
   },
-  "extends": "tsconfig/base.json",
-  "include": ["src", "test"],
-  "exclude": ["declarations", "lib", "node_modules"]
+  "exclude": ["declarations", "lib", "node_modules"],
+  "include": [
+    "commitlint.config.js",
+    "rollup.config.mjs",
+    "rollup.config.types.mjs",
+    "src",
+    "test"
+  ]
 }

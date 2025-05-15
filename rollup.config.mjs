@@ -101,7 +101,7 @@ function generateConfig(configType, format) {
       '@noble/hashes/sha3',
       '@noble/secp256k1',
       '@solana/buffer-layout',
-      'bigint-buffer',
+      '@solana/codecs-numbers',
       'bn.js',
       'borsh',
       'bs58',
@@ -110,10 +110,6 @@ function generateConfig(configType, format) {
       'jayson/lib/client/browser',
       'node-fetch',
       'rpc-websockets',
-      'rpc-websockets/dist/lib/client',
-      'rpc-websockets/dist/lib/client/client.types',
-      'rpc-websockets/dist/lib/client/websocket',
-      'rpc-websockets/dist/lib/client/websocket.browser',
       'superstruct',
     ];
   }
@@ -170,7 +166,7 @@ function generateConfig(configType, format) {
             '@noble/curves/ed25519',
             '@noble/hashes/sha256',
             '@noble/hashes/sha3',
-            'bigint-buffer',
+            '@solana/codecs-numbers',
             'bn.js',
             'borsh',
             'bs58',
@@ -182,10 +178,6 @@ function generateConfig(configType, format) {
             'node-fetch',
             'react-native-url-polyfill',
             'rpc-websockets',
-            'rpc-websockets/dist/lib/client',
-            'rpc-websockets/dist/lib/client/client.types',
-            'rpc-websockets/dist/lib/client/websocket',
-            'rpc-websockets/dist/lib/client/websocket.browser',
             'superstruct',
           ];
 
